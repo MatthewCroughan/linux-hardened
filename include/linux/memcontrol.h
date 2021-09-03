@@ -55,8 +55,13 @@ struct mem_cgroup_reclaim_cookie {
 
 #ifdef CONFIG_MEMCG
 
+#if defined(__x86_64__) && defined(CONFIG_MEMCG_32BIT_IDS)
+#define MEM_CGROUP_ID_SHIFT	32
+#define MEM_CGROUP_ID_MAX	INT_MAX
+#else
 #define MEM_CGROUP_ID_SHIFT	16
 #define MEM_CGROUP_ID_MAX	USHRT_MAX
+#endif
 
 struct mem_cgroup_id {
 	int id;
@@ -126,6 +131,10 @@ struct mem_cgroup_per_node {
 	bool			on_tree;
 	struct mem_cgroup	*memcg;		/* Back pointer, we cannot */
 						/* use container_of	   */
+
+	wait_queue_head_t	ksoftlimd_wait;
+	struct task_struct	*ksoftlimd_task;
+	struct pglist_data 	*ksoftlimd_pgdat;
 };
 
 struct mem_cgroup_threshold {
@@ -243,6 +252,13 @@ struct mem_cgroup {
 	 * Should the OOM killer kill all belonging tasks, had it kill one?
 	 */
 	bool oom_group;
+
+	/* Number of ksoftlimd threads running for this memcg */
+	atomic_long_t	ksoftlimd_threads_running; // one per NUMA node
+	atomic_long_t	ksoftlimd_total_runs;
+	atomic_long_t	ksoftlimd_total_scanned;
+	atomic_long_t	ksoftlimd_total_reclaimed;
+
 
 	/* protected by memcg_oom_lock */
 	bool		oom_lock;
@@ -642,6 +658,9 @@ unsigned long mem_cgroup_get_max(struct mem_cgroup *memcg);
 
 unsigned long mem_cgroup_size(struct mem_cgroup *memcg);
 
+void mem_cgroup_print_dump_stack_context(const char *log_lvl,
+				struct task_struct *p);
+
 void mem_cgroup_print_oom_context(struct mem_cgroup *memcg,
 				struct task_struct *p);
 
@@ -860,6 +879,19 @@ static inline void mod_lruvec_page_state(struct page *page,
 unsigned long mem_cgroup_soft_limit_reclaim(pg_data_t *pgdat, int order,
 						gfp_t gfp_mask,
 						unsigned long *total_scanned);
+
+extern int cgroup_memory_ksoftlimd_for_all;
+static inline int mem_cgroup_ksoftlimd_running(struct mem_cgroup *memcg) {
+	return (atomic_long_read(&memcg->ksoftlimd_threads_running) > 0);
+}
+int mem_cgroup_ksoftlimd_run_node(struct mem_cgroup *memcg, int nid);
+void mem_cgroup_ksoftlimd_stop_node(struct mem_cgroup *memcg, int nid);
+int mem_cgroup_ksoftlimd_run(struct mem_cgroup *memcg);
+void mem_cgroup_ksoftlimd_stop(struct mem_cgroup *memcg);
+int mem_cgroup_ksoftlimd_node_run(int nid);
+void mem_cgroup_ksoftlimd_node_stop(int nid);
+int mem_cgroup_ksoftlimd_sysctl_handler(struct ctl_table *table, int write,
+    void __user *buffer, size_t *length, loff_t *ppos);
 
 void __count_memcg_events(struct mem_cgroup *memcg, enum vm_event_item idx,
 			  unsigned long count);

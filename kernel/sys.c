@@ -62,6 +62,8 @@
 #include <linux/uidgid.h>
 #include <linux/cred.h>
 
+#include <linux/vpsadminos.h>
+
 #include <linux/nospec.h>
 
 #include <linux/kmsg_dump.h>
@@ -473,7 +475,7 @@ static int set_user(struct cred *new)
 	 * for programs doing set*uid()+execve() by harmlessly deferring the
 	 * failure to the execve() stage.
 	 */
-	if (atomic_read(&new_user->processes) >= rlimit(RLIMIT_NPROC) &&
+	if (is_ucounts_overlimit(new->ucounts, UCOUNT_RLIMIT_NPROC, rlimit(RLIMIT_NPROC)) &&
 			new_user != INIT_USER)
 		current->flags |= PF_NPROC_EXCEEDED;
 	else
@@ -1557,6 +1559,7 @@ int do_prlimit(struct task_struct *tsk, unsigned int resource,
 {
 	struct rlimit *rlim;
 	int retval = 0;
+	struct user_namespace *ns = current_user_ns();
 
 	if (resource >= RLIM_NLIMITS)
 		return -EINVAL;
@@ -1578,10 +1581,10 @@ int do_prlimit(struct task_struct *tsk, unsigned int resource,
 	rlim = tsk->signal->rlim + resource;
 	task_lock(tsk->group_leader);
 	if (new_rlim) {
-		/* Keep the capable check against init_user_ns until
-		   cgroups can contain all limits */
+		if ((ns != &init_user_ns) && (ns->parent != &init_user_ns))
+			ns = &init_user_ns;
 		if (new_rlim->rlim_max > rlim->rlim_max &&
-				!capable(CAP_SYS_RESOURCE))
+				!ns_capable(ns, CAP_SYS_RESOURCE))
 			retval = -EPERM;
 		if (!retval)
 			retval = security_task_setrlimit(tsk, resource, new_rlim);
@@ -2571,6 +2574,7 @@ static int do_sysinfo(struct sysinfo *info)
 	unsigned long mem_total, sav_total;
 	unsigned int mem_unit, bitcount;
 	struct timespec64 tp;
+	struct mem_cgroup *memcg;
 
 	memset(info, 0, sizeof(struct sysinfo));
 
@@ -2608,6 +2612,31 @@ static int do_sysinfo(struct sysinfo *info)
 			goto out;
 	}
 
+	memcg = get_current_most_limited_memcg();
+	if (memcg) {
+		unsigned long memsw = PAGE_COUNTER_MAX;
+		unsigned long memsw_usage = 0;
+		unsigned long memusage = page_counter_read(&memcg->memory);
+		unsigned long totalram = (u64)READ_ONCE(memcg->memory.max);
+
+		if (!cgroup_memory_noswap) {
+			memsw = READ_ONCE(memcg->memsw.max);
+			memsw_usage = page_counter_read(&memcg->memsw);
+		}
+
+		info->totalram = info->totalhigh = totalram;
+		info->freeram = info->freehigh = totalram - memusage;
+		if (memsw < PAGE_COUNTER_MAX) {
+			info->totalswap = memsw - totalram;
+			info->freeswap = info->totalswap - (memsw_usage - memusage);
+		} else {
+			info->totalswap = 0;
+			info->freeswap = 0;
+		}
+		info->bufferram = memcg_page_state(memcg, NR_FILE_PAGES);
+		info->sharedram = memcg_page_state(memcg, NR_SHMEM);
+		mem_cgroup_put(memcg);
+	}
 	/*
 	 * If mem_total did not overflow, multiply all memory values by
 	 * info->mem_unit and set it to 1.  This leaves things compatible

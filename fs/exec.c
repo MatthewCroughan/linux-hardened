@@ -115,6 +115,13 @@ bool path_noexec(const struct path *path)
 	       (path->mnt->mnt_sb->s_iflags & SB_I_NOEXEC);
 }
 
+bool path_nosuid(const struct path *path)
+{
+	return !mnt_may_suid(path->mnt) ||
+	       (path->mnt->mnt_sb->s_iflags & SB_I_NOSUID);
+}
+EXPORT_SYMBOL(path_nosuid);
+
 #ifdef CONFIG_USELIB
 /*
  * Note that a shared library must be both readable and executable due to
@@ -1578,7 +1585,7 @@ static void bprm_fill_uid(struct linux_binprm *bprm, struct file *file)
 	kuid_t uid;
 	kgid_t gid;
 
-	if (!mnt_may_suid(file->f_path.mnt))
+	if (path_nosuid(&bprm->file->f_path))
 		return;
 
 	if (task_no_new_privs(current))
@@ -1877,7 +1884,7 @@ static int do_execveat_common(int fd, struct filename *filename,
 	 * whether NPROC limit is still exceeded.
 	 */
 	if ((current->flags & PF_NPROC_EXCEEDED) &&
-	    atomic_read(&current_user()->processes) > rlimit(RLIMIT_NPROC)) {
+	    is_ucounts_overlimit(current_ucounts(), UCOUNT_RLIMIT_NPROC, rlimit(RLIMIT_NPROC))) {
 		retval = -EAGAIN;
 		goto out_ret;
 	}

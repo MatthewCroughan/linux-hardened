@@ -11,6 +11,7 @@
 #include <linux/posix_acl.h>
 #include <linux/ratelimit.h>
 #include <linux/fiemap.h>
+#include <linux/user_namespace.h>
 #include "overlayfs.h"
 
 
@@ -281,7 +282,6 @@ int ovl_permission(struct inode *inode, int mask)
 {
 	struct inode *upperinode = ovl_inode_upper(inode);
 	struct inode *realinode = upperinode ?: ovl_inode_lower(inode);
-	const struct cred *old_cred;
 	int err;
 
 	/* Careful in RCU walk mode */
@@ -298,15 +298,13 @@ int ovl_permission(struct inode *inode, int mask)
 	if (err)
 		return err;
 
-	old_cred = ovl_override_creds(inode->i_sb);
 	if (!upperinode &&
 	    !special_file(realinode->i_mode) && mask & MAY_WRITE) {
 		mask &= ~(MAY_WRITE | MAY_APPEND);
 		/* Make sure mounter can read file for copy up later */
 		mask |= MAY_READ;
 	}
-	err = inode_permission(realinode, mask);
-	revert_creds(old_cred);
+	err = ovl_creator_permission(inode->i_sb, realinode, mask);
 
 	return err;
 }
@@ -395,6 +393,8 @@ int ovl_xattr_get(struct dentry *dentry, struct inode *inode, const char *name,
 
 static bool ovl_can_list(struct super_block *sb, const char *s)
 {
+	struct user_namespace *ns = sb->s_user_ns;
+
 	/* Never list private (.overlay) */
 	if (ovl_is_private_xattr(sb, s))
 		return false;
@@ -403,8 +403,8 @@ static bool ovl_can_list(struct super_block *sb, const char *s)
 	if (strncmp(s, XATTR_TRUSTED_PREFIX, XATTR_TRUSTED_PREFIX_LEN) != 0)
 		return true;
 
-	/* list other trusted for superuser only */
-	return ns_capable_noaudit(&init_user_ns, CAP_SYS_ADMIN);
+	return ns_capable_noaudit(ns, CAP_SYS_ADMIN) &&
+	       ((ns == &init_user_ns) || (ns->parent == &init_user_ns));
 }
 
 ssize_t ovl_listxattr(struct dentry *dentry, char *list, size_t size)

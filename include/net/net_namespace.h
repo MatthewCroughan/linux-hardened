@@ -38,6 +38,7 @@
 #include <linux/idr.h>
 #include <linux/skbuff.h>
 #include <linux/notifier.h>
+#include <linux/syslog_namespace.h>
 
 struct user_namespace;
 struct proc_dir_entry;
@@ -97,6 +98,7 @@ struct net {
 
 #ifdef CONFIG_SYSCTL
 	struct ctl_table_set	sysctls;
+	struct ctl_table_header	*ipc_sysctl_hdr;
 #endif
 
 	struct sock 		*rtnl;			/* rtnetlink socket */

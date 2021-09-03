@@ -18,6 +18,7 @@
 #include <linux/interrupt.h>
 #include <linux/export.h>
 #include <linux/user_namespace.h>
+#include <linux/syslog_namespace.h>
 #include <linux/proc_ns.h>
 
 /*
@@ -55,6 +56,7 @@ struct user_namespace init_user_ns = {
 			},
 		},
 	},
+	.syslog_ns = &init_syslog_ns,
 	.count = ATOMIC_INIT(3),
 	.owner = GLOBAL_ROOT_UID,
 	.group = GLOBAL_ROOT_GID,
@@ -68,7 +70,7 @@ struct user_namespace init_user_ns = {
 	.keyring_sem = __RWSEM_INITIALIZER(init_user_ns.keyring_sem),
 #endif
 };
-EXPORT_SYMBOL_GPL(init_user_ns);
+EXPORT_SYMBOL(init_user_ns);
 
 /*
  * UID task count cache, to get fast user lookup in "alloc_uid"
@@ -98,9 +100,6 @@ static DEFINE_SPINLOCK(uidhash_lock);
 /* root_user.__count is 1, for init task cred */
 struct user_struct root_user = {
 	.__count	= REFCOUNT_INIT(1),
-	.processes	= ATOMIC_INIT(1),
-	.sigpending	= ATOMIC_INIT(0),
-	.locked_shm     = 0,
 	.uid		= GLOBAL_ROOT_UID,
 	.ratelimit	= RATELIMIT_STATE_INIT(root_user.ratelimit, 0, 0),
 };

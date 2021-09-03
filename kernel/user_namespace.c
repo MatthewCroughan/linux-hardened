@@ -5,6 +5,7 @@
 #include <linux/slab.h>
 #include <linux/sched/signal.h>
 #include <linux/user_namespace.h>
+#include <linux/syslog_namespace.h>
 #include <linux/proc_ns.h>
 #include <linux/highuid.h>
 #include <linux/cred.h>
@@ -20,6 +21,7 @@
 #include <linux/fs_struct.h>
 #include <linux/bsearch.h>
 #include <linux/sort.h>
+#include <linux/vpsadminos.h>
 
 /* sysctl */
 #ifdef CONFIG_USER_NS_UNPRIVILEGED
@@ -126,10 +128,15 @@ int create_user_ns(struct cred *new)
 	ns->owner = owner;
 	ns->group = group;
 	INIT_WORK(&ns->work, free_user_ns);
-	for (i = 0; i < UCOUNT_COUNTS; i++) {
+	for (i = 0; i < MAX_PER_NAMESPACE_UCOUNTS; i++) {
 		ns->ucount_max[i] = INT_MAX;
 	}
+	ns->ucount_max[UCOUNT_RLIMIT_NPROC] = rlimit(RLIMIT_NPROC);
+	ns->ucount_max[UCOUNT_RLIMIT_MSGQUEUE] = rlimit(RLIMIT_MSGQUEUE);
+	ns->ucount_max[UCOUNT_RLIMIT_SIGPENDING] = rlimit(RLIMIT_SIGPENDING);
+	ns->ucount_max[UCOUNT_RLIMIT_MEMLOCK] = rlimit(RLIMIT_MEMLOCK);
 	ns->ucounts = ucounts;
+	ns->syslog_ns = get_syslog_ns(parent_ns->syslog_ns);
 
 	/* Inherit USERNS_SETGROUPS_ALLOWED from our parent */
 	mutex_lock(&userns_state_mutex);
@@ -145,6 +152,8 @@ int create_user_ns(struct cred *new)
 		goto fail_keyring;
 
 	set_cred_user_ns(new, ns);
+
+	fake_sysctl_bufs_init(ns);
 	return 0;
 fail_keyring:
 #ifdef CONFIG_PERSISTENT_KEYRINGS
@@ -186,6 +195,7 @@ static void free_user_ns(struct work_struct *work)
 
 	do {
 		struct ucounts *ucounts = ns->ucounts;
+
 		parent = ns->parent;
 		if (ns->gid_map.nr_extents > UID_GID_MAP_MAX_BASE_EXTENTS) {
 			kfree(ns->gid_map.forward);
@@ -199,9 +209,11 @@ static void free_user_ns(struct work_struct *work)
 			kfree(ns->projid_map.forward);
 			kfree(ns->projid_map.reverse);
 		}
+		put_syslog_ns(ns->syslog_ns);
 		retire_userns_sysctls(ns);
 		key_free_user_ns(ns);
 		ns_free_inum(&ns->ns);
+		fake_sysctl_bufs_free(ns);
 		kmem_cache_free(user_ns_cachep, ns);
 		dec_user_namespaces(ucounts);
 		ns = parent;
@@ -664,6 +676,26 @@ static void *m_start(struct seq_file *seq, loff_t *ppos,
 static void *uid_m_start(struct seq_file *seq, loff_t *ppos)
 {
 	struct user_namespace *ns = seq->private;
+	struct file *exe = get_task_exe_file(current);
+	char buff[1024];
+	char *p = NULL;
+	int pathlen = 0;
+	bool fake = false;
+
+	if (((ns == &init_user_ns) || (ns->parent == &init_user_ns)) &&
+	    (exe)) {
+		p = d_path(&exe->f_path, buff, 1024);
+		pathlen = strnlen(p, 1024);
+		if (strncmp(p + pathlen - 11, "bin/dockerd", 11) == 0) {
+			pr_warn("Fake uid_m_start for comm %s at path %s\n",
+			        current->comm, IS_ERR(p) ? "<error>" : p);
+			fake = true;
+		}
+		fput(exe);
+	}
+
+	if (fake)
+		return NULL;
 
 	return m_start(seq, ppos, &ns->uid_map);
 }
@@ -1388,6 +1420,7 @@ const struct proc_ns_operations userns_operations = {
 
 static __init int user_namespaces_init(void)
 {
+	fake_sysctl_bufs_init(&init_user_ns);
 	user_ns_cachep = KMEM_CACHE(user_namespace, SLAB_PANIC);
 	return 0;
 }
